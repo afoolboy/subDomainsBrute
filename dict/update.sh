@@ -1,12 +1,14 @@
 #!/bin/bash
 
 if [ $# -eq 0 ]; then
-	echo "please write the filename"
-	exit 0
+	# echo "please write the filename"
+	# exit 0
+	fname="subnames"
+else
+	fname=$1	
 fi
 
 
-fname=$1
 file="$fname.txt"
 filebak="$fname.txt.bak"
 

@@ -10,6 +10,7 @@ import threading
 import time
 import optparse
 import os
+import re
 from lib.consle_width import getTerminalSize
 
 
@@ -23,6 +24,7 @@ class DNSBrute:
         self.found_count = 0 # how many subdomain found
         self.dns_server = server
         self.lock = threading.Lock()
+        self._subnames = {}
         self.console_width = getTerminalSize()[0] - 2    # Cal terminal width when starts up
         self.resolvers = [dns.resolver.Resolver() for _ in range(threads_num)]
         self._load_dns_servers()
@@ -32,7 +34,7 @@ class DNSBrute:
         self.outfile = open(outfile, 'w')   # won't close manually
         self.ip_dict = {}
         self.STOP_ME = False
-        # print "init"
+
 
     def _load_dns_servers(self):
         """
@@ -52,7 +54,7 @@ class DNSBrute:
                     dns_servers.append(server)
         self.dns_servers = dns_servers
         self.dns_count = len(dns_servers)
-        # print "dns load"
+        print "dns servers load"
 
     def _load_sub_names(self):
         """加载域名字典"""
@@ -61,9 +63,22 @@ class DNSBrute:
         with open(file) as f:
             for line in f:
                 sub = line.strip()
-                if sub: self.queue.put(sub)
+                if sub:
+                    res = re.split("\s+", sub)
+                    subname = str(res[0])
+                    value = int(res[1]) if len(res) == 2 else 0
+                    self.queue.put(subname)
+                    # try:
+                    if subname in self._subnames.keys():
+                        self._subnames[subname] += value
+                    else:
+                        self._subnames[subname] = value
 
-        # print "sub load"
+                    # except Exception,e:
+                    #     import pdb
+                        # pdb.set_trace()
+
+        print "subnames load"
 
     def _load_next_sub(self):
         """子域名字典"""
@@ -74,7 +89,7 @@ class DNSBrute:
                 if sub and sub not in next_subs:
                     next_subs.append(sub)
         self.next_subs = next_subs
-        # print "next sub load"
+
 
     def _update_scan_count(self):
         """
@@ -91,8 +106,8 @@ class DNSBrute:
         :return:
         """
         self.lock.acquire()
-        msg = '%s found | %s remaining | %s scanned in %.2f seconds' % (
-            self.found_count, self.queue.qsize(), self.scan_count, time.time() - self.start_time)
+        msg = '%d threads running | %s found | %s remaining | %s scanned in %.2f seconds' % (
+            self.thread_count,self.found_count, self.queue.qsize(), self.scan_count, time.time() - self.start_time)
         sys.stdout.write('\r' + ' ' * (self.console_width -len(msg)) + msg)
         sys.stdout.flush()
         self.lock.release()
@@ -124,8 +139,9 @@ class DNSBrute:
         # 插入不同的dns 到 resolver
         self.resolvers[thread_id].nameservers.insert(0, self.dns_servers[thread_id % self.dns_count])
         self.resolvers[thread_id].lifetime = self.resolvers[thread_id].timeout = 10.0
+
         while self.queue.qsize() > 0 and not self.STOP_ME and self.found_count < 40000:    # limit max found records to 40000
-            # print "s"
+            # print "in while"
             sub = self.queue.get(timeout=1.0)
             for _ in range(2):
                 try:
@@ -135,13 +151,16 @@ class DNSBrute:
                     if answers:
                         for answer in answers:
                             self.lock.acquire()
+                            # print "get acqurie"
                             if answer.address not in self.ip_dict:
                                 self.ip_dict[answer.address] = 1
                             else:
                                 self.ip_dict[answer.address] += 1
-                                if self.ip_dict[answer.address] > 2:    # a wildcard DNS record
+                                if self.ip_dict[answer.address] > 4:    # a wildcard DNS record
+                                    # fif wildcard we won't add the value
                                     is_wildcard_record = True
                             self.lock.release()
+                            # print "post acqurie"
                         if is_wildcard_record:
                             # 如果是泛域名解析的话，就更新扫描结果行
                             self._update_scan_count()
@@ -153,6 +172,12 @@ class DNSBrute:
                             # (也就是说 如果忽略内网并且它是内网的话 就不执行这个地方）
                             self.lock.acquire()
                             self.found_count += 1
+                            # try:
+                            self._subnames[sub] += 1
+                            # except Exception,e:
+                            #     print str(e)
+                            #     print sub
+                            #     raise e
                             msg = cur_sub_domain.ljust(30) + ips
                             sys.stdout.write('\r' + msg + ' ' * (self.console_width - len(msg)) + '\n\r')
                             sys.stdout.flush()
@@ -196,11 +221,24 @@ class DNSBrute:
                 sys.stdout.flush()
                 self.STOP_ME = True
 
+
+    def backup_save(self):
+        file = 'dict/' + self.names_file if not os.path.exists(self.names_file) else self.names_file
+        file_backup = file+".bak"
+        with open(file_backup,"w") as f:
+            subnameValueList = sorted(self._subnames.iteritems(),key=lambda d:d[1],reverse=True)
+            for item in subnameValueList:
+                # f.write(" ".join([str(t) for t in item])+"\n")
+                f.write(item[0].ljust(16)+str(item[1]).rjust(4)+"\n")
+        print "have backup"
+
+
+
 if __name__ == '__main__':
     parser = optparse.OptionParser('usage: %prog [options] target.com')
     parser.add_option('-t', '--threads', dest='threads_num',
-              default=30, type='int',
-              help='Number of threads. default = 30')
+              default=100, type='int',
+              help='Number of threads. default = 100')
     parser.add_option('-f', '--file', dest='names_file', default='dict/subnames.txt',
               type='string', help='Dict file used to brute sub names')
     parser.add_option('-i', '--ignore-intranet', dest='i', default=False, action='store_true',
@@ -223,3 +261,7 @@ if __name__ == '__main__':
     d.run()
     while threading.activeCount() > 1:
         time.sleep(0.1)
+
+    print "\nbackup"
+    d.backup_save()
+    print "exit"
